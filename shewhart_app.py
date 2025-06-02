@@ -7,12 +7,29 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 # --------------------------------------------------------
-# 0. Configuración de la página Streamlit
+# 0. Configuración de la página Streamlit (icono + título + diseño)
 # --------------------------------------------------------
 st.set_page_config(
     page_title="Shewhart Dashboard",
+    page_icon="📊",           # Icono de la pestaña
     layout="centered",
     initial_sidebar_state="collapsed"
+)
+
+# Pantalla inicial con icono, título y leyenda, centrado
+st.markdown(
+    """
+    <div style="text-align: center; margin-top: 30px;">
+        <span style="font-size: 60px;">📊</span><br>
+        <span style="font-size: 36px; font-weight: bold;">Shewhart Dashboard (Móvil)</span><br>
+        <span style="font-size: 16px; color: #555;">
+            🚀 Esta aplicación está alimentada por la API de Yahoo Finance.<br>
+            Utiliza precios históricos para calcular retornos y aplicar las reglas de Shewhart.
+        </span>
+    </div>
+    <hr style="margin-top: 20px; margin-bottom: 20px; border: none; height: 1px; background-color: #ddd;">
+    """,
+    unsafe_allow_html=True
 )
 
 # --------------------------------------------------------
@@ -63,11 +80,9 @@ def descargar_precios(ticker: str, interval: str, n_periodos: int) -> pd.DataFra
 def calcular_retornos_y_estadisticas(df: pd.DataFrame, tipo_retorno: str) -> pd.DataFrame:
     """
     A partir de df con columna 'Adj Close':
-      - Si tipo_retorno == 'A', calcula retornos aritméticos: (P_t / P_{t-1}) - 1.
-      - Si tipo_retorno == 'L', calcula retornos logarítmicos: ln(P_t / P_{t-1}).
-      - Calcula media y desviación estándar global (ddof=0).
-      - Genera columnas fijas: Media, STD, LSC_1σ, LIC_1σ, LSC_2σ, LIC_2σ, LSC_3σ, LIC_3σ, Z_score.
-    Devuelve DataFrame con todas esas columnas.
+      - Retornos aritméticos (A) o logarítmicos (L).
+      - Calcula media y desviación estándar global.
+      - Genera columnas: Media, STD, LSC_1σ, LIC_1σ, LSC_2σ, LIC_2σ, LSC_3σ, LIC_3σ, Z_score.
     """
     df_ret = df.copy()
     if tipo_retorno == 'A':
@@ -93,11 +108,11 @@ def calcular_retornos_y_estadisticas(df: pd.DataFrame, tipo_retorno: str) -> pd.
 
 def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
     """
-    Aplica las 14 reglas de Shewhart sobre la columna 'Z_score' y 'Retorno'.
+    Aplica las 14 reglas de Shewhart sobre 'Z_score' y 'Retorno'.
     Devuelve:
-      - df_tabla_viol: DataFrame con columnas [Regla, Descripción, Nº Violaciones, Primeras Fechas].
-      - df_detalle_viol: DataFrame con columnas [Fecha, Regla, Retorno, Z_score].
-      - media, std, dias_fuera_control.
+      - df_tabla_viol: DataFrame [Regla, Descripción, Nº Violaciones, Primeras Fechas]
+      - df_detalle_viol: DataFrame [Fecha, Regla, Retorno, Z_score]
+      - media, std, dias_fuera_control
     """
     z_scores = df_shewhart['Z_score']
     retornos = df_shewhart['Retorno']
@@ -196,7 +211,6 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
         if c >= 8:
             idx_8bajo1σ.append(fechas[i])
 
-    # Descripciones fijas para cada regla
     descripciones = {
         1:  "Un punto por encima de +3σ.",
         2:  "Un punto por debajo de −3σ.",
@@ -214,7 +228,6 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
         14: "Ocho puntos consecutivos por debajo de −1σ."
     }
 
-    # Preparar la tabla de violaciones (resumida)
     tabla_violaciones = []
     mapping = {
         1:  viol_1_arriba,
@@ -247,7 +260,6 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
         })
     df_tabla_viol = pd.DataFrame(tabla_violaciones)
 
-    # Preparar la tabla de detalle de violaciones (cada fila = 1 violación)
     detalle = []
     for regla, fechas_list in mapping.items():
         for fecha in fechas_list:
@@ -260,7 +272,6 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
             })
     df_detalle_viol = pd.DataFrame(detalle).sort_values("Fecha")
 
-    # Estadísticas globales
     media = df_shewhart['Media'].iloc[0]
     std = df_shewhart['STD'].iloc[0]
     dias_fuera_control = len(set(
@@ -287,7 +298,7 @@ def generar_excel(df_precios: pd.DataFrame,
       - 'Precios': precios ajustados.
       - 'Retornos': retornos, estadísticas y límites.
       - 'InformeShewhart': resumen estadístico + tabla de violaciones + gráfico.
-    Devuelve un buffer BytesIO listo para descargar.
+    Devuelve BytesIO listo para descargar.
     """
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
@@ -298,25 +309,22 @@ def generar_excel(df_precios: pd.DataFrame,
         df_shewhart.to_excel(writer, sheet_name="Retornos", index=True)
 
         # 3) Hoja 'InformeShewhart'
-        # Primer bloque: resumen estadístico
         df_resumen = pd.DataFrame({
-            "Campo": ["Nombre Empresa", "Ticker", "Intervalo", "Períodos analizados", 
-                      "Tipo de Retorno", "Media de retornos", "Desviación estándar σ", 
+            "Campo": ["Nombre Empresa", "Ticker", "Intervalo", "Períodos analizados",
+                      "Tipo de Retorno", "Media de retornos", "Desviación estándar σ",
                       "Días fuera de control"],
-            "Valor": [nombre_empresa, ticker, intervalo, f"{periodos}", 
+            "Valor": [nombre_empresa, ticker, intervalo, f"{periodos}",
                       tipo_retorno, f"{media:.6f}", f"{std:.6f}", f"{dias_fuera_control}"]
         })
         df_resumen.to_excel(writer, sheet_name="InformeShewhart", index=False, startrow=0)
 
-        # Segundo bloque: tabla resumida de violaciones
-        startrow = len(df_resumen.index) + 2  # dejar 1 fila en blanco
+        startrow = len(df_resumen.index) + 2
         df_tabla_viol.to_excel(writer, sheet_name="InformeShewhart", index=False, startrow=startrow)
 
-        # Tercer bloque: insertar el gráfico como imagen justo debajo
         workbook  = writer.book
         worksheet = writer.sheets["InformeShewhart"]
 
-        # Generar el gráfico en Matplotlib y guardar en buffer
+        # Gráfico en Matplotlib
         fig, ax = plt.subplots(figsize=(6, 3))
         fechas = df_shewhart.index
         retornos = df_shewhart["Retorno"]
@@ -329,20 +337,19 @@ def generar_excel(df_precios: pd.DataFrame,
         ax.axhline(media + 3 * std, color="red", linestyle="--", linewidth=1.0, label="+3σ")
         ax.axhline(media - 3 * std, color="red", linestyle="--", linewidth=1.0, label="-3σ")
 
-        # Puntos violados
-        # Mapeo fechas de df_tabla_viol para extraer índices
-        fechas_viol = df_tabla_viol["Primeras Fechas"].dropna().tolist()
-        # Convertir cada fecha de texto a datetime (solo la primera en la lista)
         viols = []
-        for s in fechas_viol:
-            if s != "—":
-                primera_fecha = pd.to_datetime(s.split(",")[0])
-                if primera_fecha in fechas:
-                    viols.append(primera_fecha)
-        viol_indices = [fechas.get_loc(f) for f in viols]
+        for _, row in df_detalle_viol.iterrows():
+            viols.append(pd.to_datetime(row["Fecha"]))
+        viol_indices = [fechas.get_loc(f) for f in viols if f in fechas]
         if viol_indices:
-            ax.scatter(fechas[viol_indices], retornos.iloc[viol_indices],
-                       color="red", edgecolor="black", label="Violación", zorder=5)
+            ax.scatter(
+                fechas[viol_indices],
+                retornos.iloc[viol_indices],
+                color="red",
+                edgecolor="black",
+                label="Violación",
+                zorder=5
+            )
 
         ax.legend(loc="lower left", fontsize="small")
         ax.set_title(f"Gráfico de Control – {ticker}")
@@ -351,13 +358,11 @@ def generar_excel(df_precios: pd.DataFrame,
         plt.xticks(rotation=45)
         plt.tight_layout()
 
-        # Guardar el gráfico en un buffer de bytes
         img_data = BytesIO()
         fig.savefig(img_data, format="png")
         plt.close(fig)
         img_data.seek(0)
 
-        # Insertar la imagen en la hoja, debajo de la tabla
         img_row = startrow + len(df_tabla_viol.index) + 2
         worksheet.insert_image(img_row, 0, "gráfico.png", {'image_data': img_data})
 
@@ -368,19 +373,17 @@ def generar_excel(df_precios: pd.DataFrame,
 # 2. Interfaz de Streamlit
 # --------------------------------------------------------
 
-# 2.1. Expander para los parámetros (desplegado por defecto)
+# 2.1. Expander para parámetros (desplegado por defecto)
 with st.expander("⚙️ Parámetros de Análisis", expanded=True):
     ticker = st.text_input("📌 Ticker", value="AAPL").strip().upper()
     intervalo = st.selectbox("⏱ Intervalo", ["1d", "1wk", "1mo", "1y"])
     periodos = st.number_input("🔢 Períodos (hacia atrás)", min_value=1, value=30, step=1)
     tipo = st.radio("📊 Tipo de Retorno", ("Aritmético", "Logarítmico"))
 
-    # Selector de qué sigma mostrar
-    opciones_sigma = st.multiselect(
-        "🔢 Límites a mostrar (Selecciona 1σ, 2σ y/o 3σ)", 
-        ["1σ", "2σ", "3σ"],
-        default=["1σ", "2σ", "3σ"]
-    )
+    # Checkbox para elegir cada σ
+    mostrar_1sigma = st.checkbox("Mostrar ±1σ", value=True)
+    mostrar_2sigma = st.checkbox("Mostrar ±2σ", value=True)
+    mostrar_3sigma = st.checkbox("Mostrar ±3σ", value=True)
 
     calcular_btn = st.button("▶ Calcular")
 
@@ -389,25 +392,21 @@ if not calcular_btn:
     st.markdown(
         "<div style='text-align:center; color:gray; font-size:18px; margin-top:40px;'>"
         "🔍 Por favor, completa los parámetros y presiona **Calcular** para ver los resultados."
-        "</div>", 
+        "</div>",
         unsafe_allow_html=True
     )
-    st.stop()  # Detiene la ejecución hasta que se presione el botón
+    st.stop()
 
 # --------------------------------------------------------
 # 3. Lógica principal (al presionar "Calcular")
 # --------------------------------------------------------
 try:
-    # 3.1. Obtener nombre de la empresa
     nombre_empresa = obtener_nombre_empresa(ticker)
-    # 3.2. Descargar precios
     df_precios = descargar_precios(ticker, intervalo, periodos)
-    # 3.3. Calcular retornos y estadísticas
     df_shewhart = calcular_retornos_y_estadisticas(
-        df_precios, 
+        df_precios,
         "A" if tipo == "Aritmético" else "L"
     )
-    # 3.4. Detectar violaciones
     df_tabla_viol, df_detalle_viol, media, std, dias_fuera_control = detectar_todas_las_reglas(df_shewhart)
 
     st.success("✅ Cálculo completado")
@@ -444,7 +443,7 @@ try:
     st.markdown(html_tabla, unsafe_allow_html=True)
 
     # --------------------------------------------------------
-    # 6. Detalle de Violaciones (opcional, dentro de expander)
+    # 6. Detalle de Violaciones (opcional, en expander)
     # --------------------------------------------------------
     with st.expander("🔍 Detalle de Violaciones (cada punto)", expanded=False):
         if df_detalle_viol.empty:
@@ -467,20 +466,17 @@ try:
     fechas = df_shewhart.index
     retornos = df_shewhart["Retorno"]
 
-    # Serie de retornos
     ax.plot(fechas, retornos, marker="o", linestyle="-", label="Retorno", color="blue")
-
-    # Línea de media
     ax.axhline(media, color="orange", linestyle="--", label="Media")
 
-    # Límites dinámicos según selección del usuario
-    if "1σ" in opciones_sigma:
+    # Límites según checkboxes
+    if mostrar_1sigma:
         ax.axhline(media + std, color="green", linestyle="--", linewidth=0.8, label="+1σ")
         ax.axhline(media - std, color="green", linestyle="--", linewidth=0.8, label="-1σ")
-    if "2σ" in opciones_sigma:
+    if mostrar_2sigma:
         ax.axhline(media + 2 * std, color="purple", linestyle="--", linewidth=0.8, label="+2σ")
         ax.axhline(media - 2 * std, color="purple", linestyle="--", linewidth=0.8, label="-2σ")
-    if "3σ" in opciones_sigma:
+    if mostrar_3sigma:
         ax.axhline(media + 3 * std, color="red", linestyle="--", linewidth=1.0, label="+3σ")
         ax.axhline(media - 3 * std, color="red", linestyle="--", linewidth=1.0, label="-3σ")
 
@@ -499,7 +495,6 @@ try:
             zorder=5
         )
 
-    # Leyenda fuera del gráfico
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), frameon=False, fontsize="small")
     ax.set_title(f"Gráfico de Control de Retornos – {ticker}")
     ax.set_xlabel("Fecha")
