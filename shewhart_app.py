@@ -81,8 +81,8 @@ def calcular_retornos_y_estadisticas(df: pd.DataFrame, tipo_retorno: str) -> pd.
     """
     A partir de df con columna 'Adj Close':
       - Retornos aritméticos (A) o logarítmicos (L).
-      - Calcula media y desviación estándar global.
-      - Genera columnas: Media, STD, LSC_1σ, LIC_1σ, LSC_2σ, LIC_2σ, LSC_3σ, LIC_3σ, Z_score.
+      - Calcula media, desviación estándar y retorno absoluto promedio.
+      - Genera columnas: Media, STD, Retorno absoluto, LSC_1σ, LIC_1σ, LSC_2σ, LIC_2σ, LSC_3σ, LIC_3σ, Z_score.
     """
     df_ret = df.copy()
     if tipo_retorno == 'A':
@@ -93,9 +93,11 @@ def calcular_retornos_y_estadisticas(df: pd.DataFrame, tipo_retorno: str) -> pd.
 
     media_val = df_ret['Retorno'].mean()
     std_val = df_ret['Retorno'].std(ddof=0)
+    ret_abs_prom = df_ret['Retorno'].abs().mean()
 
     df_ret['Media'] = media_val
     df_ret['STD'] = std_val
+    df_ret['Retorno absoluto promedio'] = ret_abs_prom
     df_ret['LSC_1σ'] = media_val + std_val
     df_ret['LIC_1σ'] = media_val - std_val
     df_ret['LSC_2σ'] = media_val + 2 * std_val
@@ -112,7 +114,7 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
     Devuelve:
       - df_tabla_viol: DataFrame [Regla, Descripción, Nº Violaciones, Primeras Fechas]
       - df_detalle_viol: DataFrame [Fecha, Regla, Retorno, Z_score]
-      - media, std, dias_fuera_control
+      - media, std, ret_abs_prom, lsc3, lic3, dias_fuera_control
     """
     z_scores = df_shewhart['Z_score']
     retornos = df_shewhart['Retorno']
@@ -249,7 +251,7 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
         fechas_viol = mapping[regla]
         num_viol = len(fechas_viol)
         primeras = (
-            ", ".join(str(f.date()) for f in fechas_viol[:3]) 
+            ", ".join(str(f.date()) for f in fechas_viol[:3])
             if num_viol > 0 else "—"
         )
         tabla_violaciones.append({
@@ -274,13 +276,16 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
 
     media = df_shewhart['Media'].iloc[0]
     std = df_shewhart['STD'].iloc[0]
+    ret_abs_prom = df_shewhart['Retorno absoluto promedio'].iloc[0]
+    lsc3 = df_shewhart['LSC_3σ'].iloc[0]
+    lic3 = df_shewhart['LIC_3σ'].iloc[0]
     dias_fuera_control = len(set(
         viol_1_arriba + viol_2_abajo + idx_arriba_9 + idx_abajo_9 +
         idx_crec_6 + idx_decrec_6 + idx_alt_14 + idx_2sobre2σ + idx_2bajo2σ +
         idx_4sobre1σ + idx_4bajo1σ + idx_dentro15 + idx_8sobre1σ + idx_8bajo1σ
     ))
 
-    return df_tabla_viol, df_detalle_viol, media, std, dias_fuera_control
+    return df_tabla_viol, df_detalle_viol, media, std, ret_abs_prom, lsc3, lic3, dias_fuera_control
 
 def generar_excel(df_precios: pd.DataFrame,
                    df_shewhart: pd.DataFrame,
@@ -292,6 +297,9 @@ def generar_excel(df_precios: pd.DataFrame,
                    tipo_retorno: str,
                    media: float,
                    std: float,
+                   ret_abs_prom: float,
+                   lsc3: float,
+                   lic3: float,
                    dias_fuera_control: int) -> BytesIO:
     """
     Genera un archivo Excel en memoria con tres pestañas:
@@ -310,11 +318,13 @@ def generar_excel(df_precios: pd.DataFrame,
 
         # 3) Hoja 'InformeShewhart'
         df_resumen = pd.DataFrame({
-            "Campo": ["Nombre Empresa", "Ticker", "Intervalo", "Períodos analizados",
-                      "Tipo de Retorno", "Media de retornos", "Desviación estándar σ",
+            "Campo": ["Ticker", "Nombre Empresa", "Períodos Analizados", "Tipo de Retorno",
+                      "Sigma (control)", "Media de retornos", "Retorno absoluto promedio",
+                      "Desviación estándar σ", "Límite Superior (LSC)", "Límite Inferior (LIC)",
                       "Días fuera de control"],
-            "Valor": [nombre_empresa, ticker, intervalo, f"{periodos}",
-                      tipo_retorno, f"{media:.6f}", f"{std:.6f}", f"{dias_fuera_control}"]
+            "Valor": [ticker, nombre_empresa, f"{periodos} ({intervalo})", tipo_retorno,
+                      "+/−3.0σ", f"{media:.6f}", f"{ret_abs_prom:.6f}",
+                      f"{std:.6f}", f"{lsc3:.6f}", f"{lic3:.6f}", f"{dias_fuera_control}"]
         })
         df_resumen.to_excel(writer, sheet_name="InformeShewhart", index=False, startrow=0)
 
@@ -338,8 +348,11 @@ def generar_excel(df_precios: pd.DataFrame,
         ax.axhline(media - 3 * std, color="red", linestyle="--", linewidth=1.0, label="-3σ")
 
         viols = []
-        for _, row in df_detalle_viol.iterrows():
-            viols.append(pd.to_datetime(row["Fecha"]))
+        for _, row in df_tabla_viol.iterrows():
+            # Tomamos sólo la primera fecha de "Primeras Fechas" si existe
+            if row["Primeras Fechas"] != "—":
+                primera = row["Primeras Fechas"].split(",")[0]
+                viols.append(pd.to_datetime(primera))
         viol_indices = [fechas.get_loc(f) for f in viols if f in fechas]
         if viol_indices:
             ax.scatter(
@@ -380,7 +393,7 @@ with st.expander("⚙️ Parámetros de Análisis", expanded=True):
     periodos = st.number_input("🔢 Períodos (hacia atrás)", min_value=1, value=30, step=1)
     tipo = st.radio("📊 Tipo de Retorno", ("Aritmético", "Logarítmico"))
 
-    # Checkbox para elegir cada σ
+    # Checkboxes para elegir cada σ
     mostrar_1sigma = st.checkbox("Mostrar ±1σ", value=True)
     mostrar_2sigma = st.checkbox("Mostrar ±2σ", value=True)
     mostrar_3sigma = st.checkbox("Mostrar ±3σ", value=True)
@@ -407,33 +420,39 @@ try:
         df_precios,
         "A" if tipo == "Aritmético" else "L"
     )
-    df_tabla_viol, df_detalle_viol, media, std, dias_fuera_control = detectar_todas_las_reglas(df_shewhart)
+    df_tabla_viol, df_detalle_viol, media, std, ret_abs_prom, lsc3, lic3, dias_fuera_control = detectar_todas_las_reglas(df_shewhart)
 
     st.success("✅ Cálculo completado")
 
     # --------------------------------------------------------
     # 4. Resumen Estadístico (primero)
     # --------------------------------------------------------
-    st.subheader("📝 Resumen Estadístico")
+    st.subheader("📝 Informe Estadístico de Control Shewhart")
     st.markdown(
         f"""
-        - **Nombre Empresa:** `{nombre_empresa}`  
         - **Ticker:** `{ticker}`  
-        - **Intervalo:** `{intervalo}`  
-        - **Períodos analizados:** `{periodos}`  
+        - **Nombre Empresa:** `{nombre_empresa}`  
+        - **Períodos Analizados:** `{periodos} ({intervalo})`  
         - **Tipo de Retorno:** `{tipo}`  
+        - **Sigma (control):** `+/−3.0σ`  
         - **Media de retornos:** `{media:.6f}`  
+        - **Retorno absoluto promedio:** `{ret_abs_prom:.6f}`  
         - **Desviación estándar (σ):** `{std:.6f}`  
-        - **Días fuera de control:** `{dias_fuera_control}`
+        - **Límite Superior (LSC):** `{lsc3:.6f}`  
+        - **Límite Inferior (LIC):** `{lic3:.6f}`  
+        - **Días fuera de control:** `{dias_fuera_control}`  
         """,
         unsafe_allow_html=True
     )
 
     # --------------------------------------------------------
-    # 5. Tabla de Violaciones (resumida)
+    # 5. Tabla de Violaciones (resumida) sin border ni class
     # --------------------------------------------------------
     st.subheader("📋 Tabla de Violaciones")
-    html_tabla = df_tabla_viol.to_html(index=False)
+    html_tabla = df_tabla_viol.to_html(index=False, border=0)
+    # Eliminar 'class="dataframe"' si lo incluyera
+    html_tabla = html_tabla.replace('class="dataframe"', '')
+    # Alinear todo a la izquierda y ajustar tamaño de fuente
     html_tabla = (
         html_tabla
         .replace("<table", '<table style="text-align: left; font-size: 12px; border-collapse: collapse; width:100%;">')
@@ -443,13 +462,14 @@ try:
     st.markdown(html_tabla, unsafe_allow_html=True)
 
     # --------------------------------------------------------
-    # 6. Detalle de Violaciones (opcional, en expander)
+    # 6. Detalle de Violaciones (opcional, en expander) sin border ni class
     # --------------------------------------------------------
     with st.expander("🔍 Detalle de Violaciones (cada punto)", expanded=False):
         if df_detalle_viol.empty:
             st.write("No se encontraron violaciones detalladas.")
         else:
-            html_detalle = df_detalle_viol.to_html(index=False)
+            html_detalle = df_detalle_viol.to_html(index=False, border=0)
+            html_detalle = html_detalle.replace('class="dataframe"', '')
             html_detalle = (
                 html_detalle
                 .replace("<table", '<table style="text-align: left; font-size: 12px; border-collapse: collapse; width:100%;">')
@@ -482,8 +502,10 @@ try:
 
     # Puntos violados (rojos)
     viols = []
-    for _, row in df_detalle_viol.iterrows():
-        viols.append(pd.to_datetime(row["Fecha"]))
+    for _, row in df_tabla_viol.iterrows():
+        if row["Primeras Fechas"] != "—":
+            primera = row["Primeras Fechas"].split(",")[0]
+            viols.append(pd.to_datetime(primera))
     viol_indices = [fechas.get_loc(f) for f in viols if f in fechas]
     if viol_indices:
         ax.scatter(
@@ -519,6 +541,9 @@ try:
         tipo_retorno=tipo,
         media=media,
         std=std,
+        ret_abs_prom=ret_abs_prom,
+        lsc3=lsc3,
+        lic3=lic3,
         dias_fuera_control=dias_fuera_control
     )
     st.download_button(
@@ -528,5 +553,13 @@ try:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
+    # --------------------------------------------------------
+    # 9. Botón para reiniciar la calculadora
+    # --------------------------------------------------------
+    st.markdown("---")
+    if st.button("🔄 Reiniciar calculadora"):
+        st.experimental_rerun()
+
 except Exception as e:
     st.error(f"❌ Error: {e}")
+
