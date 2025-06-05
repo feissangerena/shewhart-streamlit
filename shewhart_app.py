@@ -11,7 +11,7 @@ from io import BytesIO
 # --------------------------------------------------------
 st.set_page_config(
     page_title="Shewhart Dashboard",
-    page_icon="📊",           # Icono de la pestaña
+    page_icon="📊",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
@@ -81,8 +81,8 @@ def calcular_retornos_y_estadisticas(df: pd.DataFrame, tipo_retorno: str) -> pd.
     """
     A partir de df con columna 'Adj Close':
       - Retornos aritméticos (A) o logarítmicos (L).
-      - Calcula media, desviación estándar y retorno absoluto promedio.
-      - Genera columnas: Media, STD, Retorno absoluto, LSC_1σ, LIC_1σ, LSC_2σ, LIC_2σ, LSC_3σ, LIC_3σ, Z_score.
+      - Calcula media, desviación estándar estimada (σ̂) usando rango móvil y d2=1.128.
+      - Genera columnas: Media, STD, Retorno absoluto promedio, LSC_1σ, LIC_1σ, LSC_2σ, LIC_2σ, LSC_3σ, LIC_3σ, Z_score.
     """
     df_ret = df.copy()
     if tipo_retorno == 'A':
@@ -91,21 +91,34 @@ def calcular_retornos_y_estadisticas(df: pd.DataFrame, tipo_retorno: str) -> pd.
         df_ret['Retorno'] = np.log(df_ret['Adj Close'] / df_ret['Adj Close'].shift(1))
     df_ret.dropna(inplace=True)
 
+    # 1) Calcular media
     media_val = df_ret['Retorno'].mean()
-    std_val = df_ret['Retorno'].std(ddof=0)
+    # 2) Calcular rango móvil absoluto y estimar σ̂ usando d2 = 1.128 (subgrupos de tamaño 2)
+    df_ret['MR'] = df_ret['Retorno'].diff().abs()
+    MR_bar = df_ret['MR'].mean(skipna=True)
+    d2 = 1.128
+    sigma_hat = MR_bar / d2
+
+    # 3) Calcular retorno absoluto promedio
     ret_abs_prom = df_ret['Retorno'].abs().mean()
 
+    # 4) Asignar columnas
     df_ret['Media'] = media_val
-    df_ret['STD'] = std_val
+    df_ret['STD'] = sigma_hat
     df_ret['Retorno absoluto promedio'] = ret_abs_prom
-    df_ret['LSC_1σ'] = media_val + std_val
-    df_ret['LIC_1σ'] = media_val - std_val
-    df_ret['LSC_2σ'] = media_val + 2 * std_val
-    df_ret['LIC_2σ'] = media_val - 2 * std_val
-    df_ret['LSC_3σ'] = media_val + 3 * std_val
-    df_ret['LIC_3σ'] = media_val - 3 * std_val
+    df_ret['LSC_1σ'] = media_val + sigma_hat
+    df_ret['LIC_1σ'] = media_val - sigma_hat
+    df_ret['LSC_2σ'] = media_val + 2 * sigma_hat
+    df_ret['LIC_2σ'] = media_val - 2 * sigma_hat
+    df_ret['LSC_3σ'] = media_val + 3 * sigma_hat
+    df_ret['LIC_3σ'] = media_val - 3 * sigma_hat
 
-    df_ret['Z_score'] = (df_ret['Retorno'] - media_val) / std_val
+    # 5) Z-score usando σ̂
+    df_ret['Z_score'] = (df_ret['Retorno'] - media_val) / sigma_hat
+
+    # 6) Eliminar columna intermedia MR
+    df_ret.drop(columns=['MR'], inplace=True)
+
     return df_ret
 
 def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
@@ -275,7 +288,7 @@ def detectar_todas_las_reglas(df_shewhart: pd.DataFrame):
     df_detalle_viol = pd.DataFrame(detalle).sort_values("Fecha")
 
     media = df_shewhart['Media'].iloc[0]
-    std = df_shewhart['STD'].iloc[0]
+    std = df_shewhart['STD'].iloc[0]          # Ahora es σ̂ estimado
     ret_abs_prom = df_shewhart['Retorno absoluto promedio'].iloc[0]
     lsc3 = df_shewhart['LSC_3σ'].iloc[0]
     lic3 = df_shewhart['LIC_3σ'].iloc[0]
@@ -323,7 +336,7 @@ def generar_excel(df_precios: pd.DataFrame,
                       "Desviación estándar σ", "Límite Superior (LSC)", "Límite Inferior (LIC)",
                       "Días fuera de control"],
             "Valor": [ticker, nombre_empresa, f"{periodos} ({intervalo})", tipo_retorno,
-                      "+/−3.0σ", f"{media:.6f}", f"{ret_abs_prom:.6f}",
+                      "+/−3.0σ̂", f"{media:.6f}", f"{ret_abs_prom:.6f}",
                       f"{std:.6f}", f"{lsc3:.6f}", f"{lic3:.6f}", f"{dias_fuera_control}"]
         })
         df_resumen.to_excel(writer, sheet_name="InformeShewhart", index=False, startrow=0)
@@ -340,16 +353,15 @@ def generar_excel(df_precios: pd.DataFrame,
         retornos = df_shewhart["Retorno"]
         ax.plot(fechas, retornos, marker="o", linestyle="-", label="Retorno", color="blue")
         ax.axhline(media, color="orange", linestyle="--", label="Media")
-        ax.axhline(media + std, color="green", linestyle="--", linewidth=0.8, label="+1σ")
-        ax.axhline(media - std, color="green", linestyle="--", linewidth=0.8, label="-1σ")
-        ax.axhline(media + 2 * std, color="purple", linestyle="--", linewidth=0.8, label="+2σ")
-        ax.axhline(media - 2 * std, color="purple", linestyle="--", linewidth=0.8, label="-2σ")
-        ax.axhline(media + 3 * std, color="red", linestyle="--", linewidth=1.0, label="+3σ")
-        ax.axhline(media - 3 * std, color="red", linestyle="--", linewidth=1.0, label="-3σ")
+        ax.axhline(media + std, color="green", linestyle="--", linewidth=0.8, label="+1σ̂")
+        ax.axhline(media - std, color="green", linestyle="--", linewidth=0.8, label="-1σ̂")
+        ax.axhline(media + 2 * std, color="purple", linestyle="--", linewidth=0.8, label="+2σ̂")
+        ax.axhline(media - 2 * std, color="purple", linestyle="--", linewidth=0.8, label="-2σ̂")
+        ax.axhline(media + 3 * std, color="red", linestyle="--", linewidth=1.0, label="+3σ̂")
+        ax.axhline(media - 3 * std, color="red", linestyle="--", linewidth=1.0, label="-3σ̂")
 
         viols = []
         for _, row in df_tabla_viol.iterrows():
-            # Tomamos sólo la primera fecha de "Primeras Fechas" si existe
             if row["Primeras Fechas"] != "—":
                 primera = row["Primeras Fechas"].split(",")[0]
                 viols.append(pd.to_datetime(primera))
@@ -434,10 +446,10 @@ try:
         - **Nombre Empresa:** `{nombre_empresa}`  
         - **Períodos Analizados:** `{periodos} ({intervalo})`  
         - **Tipo de Retorno:** `{tipo}`  
-        - **Sigma (control):** `+/−3.0σ`  
+        - **Sigma (control):** `+/−3.0σ̂`  
         - **Media de retornos:** `{media:.6f}`  
         - **Retorno absoluto promedio:** `{ret_abs_prom:.6f}`  
-        - **Desviación estándar (σ):** `{std:.6f}`  
+        - **Desviación estándar (σ̂):** `{std:.6f}`  
         - **Límite Superior (LSC):** `{lsc3:.6f}`  
         - **Límite Inferior (LIC):** `{lic3:.6f}`  
         - **Días fuera de control:** `{dias_fuera_control}`  
@@ -450,9 +462,7 @@ try:
     # --------------------------------------------------------
     st.subheader("📋 Tabla de Violaciones")
     html_tabla = df_tabla_viol.to_html(index=False, border=0)
-    # Eliminar 'class="dataframe"' si lo incluyera
     html_tabla = html_tabla.replace('class="dataframe"', '')
-    # Alinear todo a la izquierda y ajustar tamaño de fuente
     html_tabla = (
         html_tabla
         .replace("<table", '<table style="text-align: left; font-size: 12px; border-collapse: collapse; width:100%;">')
@@ -491,14 +501,14 @@ try:
 
     # Límites según checkboxes
     if mostrar_1sigma:
-        ax.axhline(media + std, color="green", linestyle="--", linewidth=0.8, label="+1σ")
-        ax.axhline(media - std, color="green", linestyle="--", linewidth=0.8, label="-1σ")
+        ax.axhline(media + std, color="green", linestyle="--", linewidth=0.8, label="+1σ̂")
+        ax.axhline(media - std, color="green", linestyle="--", linewidth=0.8, label="-1σ̂")
     if mostrar_2sigma:
-        ax.axhline(media + 2 * std, color="purple", linestyle="--", linewidth=0.8, label="+2σ")
-        ax.axhline(media - 2 * std, color="purple", linestyle="--", linewidth=0.8, label="-2σ")
+        ax.axhline(media + 2 * std, color="purple", linestyle="--", linewidth=0.8, label="+2σ̂")
+        ax.axhline(media - 2 * std, color="purple", linestyle="--", linewidth=0.8, label="-2σ̂")
     if mostrar_3sigma:
-        ax.axhline(media + 3 * std, color="red", linestyle="--", linewidth=1.0, label="+3σ")
-        ax.axhline(media - 3 * std, color="red", linestyle="--", linewidth=1.0, label="-3σ")
+        ax.axhline(media + 3 * std, color="red", linestyle="--", linewidth=1.0, label="+3σ̂")
+        ax.axhline(media - 3 * std, color="red", linestyle="--", linewidth=1.0, label="-3σ̂")
 
     # Puntos violados (rojos)
     viols = []
